@@ -1,0 +1,7 @@
+{
+  "name": "Socratic Grade 12 Tutor",
+  "description": "An expert AI tutor that helps Grade 12 students master complex subjects like Calculus, Physics, and Literature using the Socratic Method of guided questioning.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
