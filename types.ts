@@ -1,6 +1,7 @@
 
 export type Level = 'NSSCO' | 'NSSCAS';
 export type UserStatus = 'pending' | 'approved' | 'revoked';
+export type UserRole = 'student' | 'admin' | 'tutor';
 
 export type Subject = 
   | 'Mathematics' 
@@ -14,7 +15,7 @@ export type Subject =
   | 'Business Studies'
   | 'History' 
   | 'Development Studies'
-  | 'Agriculture'
+  | 'Agriculture' 
   | 'Computer Studies'
   | 'Entrepreneurship';
 
@@ -46,8 +47,10 @@ export interface AppUser {
   id: string;
   name: string;
   phone: string;
-  email?: string; // For admin
+  email?: string;
   password: string;
   status: UserStatus;
+  role: UserRole;
+  trialStart: string;
   isAdmin?: boolean;
 }

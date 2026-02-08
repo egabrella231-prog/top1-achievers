@@ -1,9 +1,12 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Message, Level, SubjectOption, AppUser, UserStatus } from './types';
+import { Message, Level, SubjectOption, AppUser, UserStatus, UserRole } from './types';
 import { SUBJECTS } from './constants';
 import { createChatInstance, connectTutorLive } from './services/geminiService';
 import { Chat, GenerateContentResponse, LiveServerMessage } from '@google/genai';
+
+// 🔗 Google Apps Script Backend URL
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxBoBi-r9aXK5STtx3Y8XFQKO4jxt8ikJ1aJVOZqGQm0RZrfzCrYdy5yI7IXg2O5pqD/exec";
 
 // --- Auth Constants ---
 const ADMIN_EMAIL = 'pemo60543@gmail.com';
@@ -98,6 +101,7 @@ const App: React.FC = () => {
   const [authSuccess, setAuthSuccess] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false);
 
   // Form Fields
   const [nameField, setNameField] = useState('');
@@ -131,8 +135,12 @@ const App: React.FC = () => {
   // --- Persistence ---
   useEffect(() => { localStorage.setItem('pocket_tutor_users', JSON.stringify(allUsers)); }, [allUsers]);
   useEffect(() => {
-    if (currentUser) localStorage.setItem('pocket_tutor_session', JSON.stringify(currentUser));
-    else localStorage.removeItem('pocket_tutor_session');
+    if (currentUser) {
+      localStorage.setItem('pocket_tutor_session', JSON.stringify(currentUser));
+      if (currentUser.isAdmin) setIsAdminPanelOpen(true);
+    } else {
+      localStorage.removeItem('pocket_tutor_session');
+    }
   }, [currentUser]);
 
   useEffect(() => {
@@ -140,34 +148,164 @@ const App: React.FC = () => {
   }, [messages, isTyping, isVoiceActive]);
 
   // --- Handlers ---
-  const handleSignUp = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (allUsers.find(u => u.phone === phoneField)) { setAuthError("Phone already registered."); return; }
-    const newUser: AppUser = { id: Date.now().toString(), name: nameField, phone: phoneField, password: passwordField, status: 'pending' };
-    setAllUsers([...allUsers, newUser]);
-    setAuthSuccess("Enrollment received! Awaiting approval. Please ensure payment is completed via the methods below.");
-    setAuthView('login');
-    setNameField(''); setPhoneField(''); setPasswordField('');
+  const fetchUsers = async () => {
+    setIsLoadingUsers(true);
+    try {
+      const res = await fetch(SCRIPT_URL, {
+        method: "POST",
+        body: JSON.stringify({ action: "get_users" })
+      });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.users)) {
+        setAllUsers(data.users);
+      }
+    } catch (e) {
+      console.error("Failed to fetch users", e);
+    } finally {
+      setIsLoadingUsers(false);
+    }
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    const user = allUsers.find(u => u.phone === phoneField && u.password === passwordField);
-    if (!user) { setAuthError("Invalid credentials."); return; }
-    if (user.status !== 'approved') { setAuthError(`Access ${user.status}. Contact 0813879841.`); return; }
-    setCurrentUser(user);
-    setPhoneField(''); setPasswordField('');
+    if (allUsers.find(u => u.phone === phoneField)) {
+      setAuthError("Phone already registered.");
+      return;
+    }
+
+    const trialStart = new Date().toLocaleDateString();
+    const newUser: AppUser = {
+      id: Date.now().toString(),
+      name: nameField,
+      phone: phoneField,
+      password: passwordField,
+      status: 'pending',
+      role: 'student',
+      trialStart: trialStart
+    };
+
+    try {
+      await fetch(SCRIPT_URL, {
+        method: "POST",
+        body: JSON.stringify({
+          action: "register",
+          name: nameField,
+          cellphone: phoneField,
+          password: passwordField,
+          role: 'student',
+          status: 'pending',
+          trialStart: trialStart
+        })
+      });
+      setAllUsers([...allUsers, newUser]);
+      setAuthSuccess("Enrollment received! Awaiting approval. Please ensure payment is completed via the methods below.");
+      setAuthView('login');
+      setNameField('');
+      setPhoneField('');
+      setPasswordField('');
+    } catch (err) {
+      setAuthError("Registration failed. Network error.");
+    }
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(SCRIPT_URL, {
+        method: "POST",
+        body: JSON.stringify({
+          action: "login",
+          cellphone: phoneField,
+          password: passwordField
+        })
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setAuthError("Account not approved or wrong credentials.");
+        return;
+      }
+      setCurrentUser({
+        id: data.id || 'usr-' + Date.now(),
+        name: data.name || 'Scholar',
+        phone: phoneField,
+        role: data.role || 'student',
+        status: data.status || 'approved',
+        password: passwordField,
+        trialStart: data.trialStart || 'N/A'
+      });
+      setPhoneField('');
+      setPasswordField('');
+    } catch (err) {
+      setAuthError("Connection error. Try again.");
+    }
   };
 
   const handleAdminLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (emailField === ADMIN_EMAIL && passwordField === ADMIN_PASSWORD) {
-      const admin: AppUser = { id: 'admin', name: 'Admin', phone: 'SYSTEM', status: 'approved', isAdmin: true, password: ADMIN_PASSWORD };
-      setCurrentUser(admin); setIsAdminPanelOpen(true);
-    } else { setAuthError("Access Denied."); }
+      const admin: AppUser = {
+        id: 'admin',
+        name: 'Nexus Master',
+        phone: 'SYSTEM',
+        status: 'approved',
+        role: 'admin',
+        password: ADMIN_PASSWORD,
+        trialStart: 'PERPETUAL',
+        isAdmin: true
+      };
+      setCurrentUser(admin);
+      setIsAdminPanelOpen(true);
+      fetchUsers();
+    } else {
+      setAuthError("Access Denied.");
+    }
   };
 
-  const logout = () => { setCurrentUser(null); setIsAdminPanelOpen(false); resetChat(); };
+  const handleApproveUser = async (cellphone: string) => {
+    try {
+      await fetch(SCRIPT_URL, {
+        method: "POST",
+        body: JSON.stringify({ action: "approve", cellphone })
+      });
+      setAllUsers(prev => prev.map(u => u.phone === cellphone ? { ...u, status: 'approved' } : u));
+      alert("User approved!");
+    } catch (e) {
+      alert("Error approving user.");
+    }
+  };
+
+  const handleRevokeUser = async (cellphone: string) => {
+    try {
+      await fetch(SCRIPT_URL, {
+        method: "POST",
+        body: JSON.stringify({ action: "revoke", cellphone })
+      });
+      setAllUsers(prev => prev.map(u => u.phone === cellphone ? { ...u, status: 'revoked' } : u));
+      alert("User revoked!");
+    } catch (e) {
+      alert("Error revoking user.");
+    }
+  };
+
+  const handleDeleteUser = async (cellphone: string) => {
+    if (!window.confirm("Are you sure you want to delete this user?")) return;
+    try {
+      await fetch(SCRIPT_URL, {
+        method: "POST",
+        body: JSON.stringify({ action: "delete", cellphone })
+      });
+      setAllUsers(prev => prev.filter(u => u.phone !== cellphone));
+      alert("User deleted!");
+    } catch (e) {
+      alert("Error deleting user.");
+    }
+  };
+
+  const logout = () => { 
+    setCurrentUser(null); 
+    setIsAdminPanelOpen(false); 
+    resetChat(); 
+  };
 
   const stopVoiceMode = useCallback(() => {
     if (liveSessionRef.current) { liveSessionRef.current.then((s: any) => s.close()); liveSessionRef.current = null; }
@@ -216,7 +354,6 @@ const App: React.FC = () => {
           source.connect(processor); processor.connect(inputCtx.destination);
         },
         onmessage: async (message: LiveServerMessage) => {
-          // Handle Audio Playback
           const audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
           if (audio && outputAudioContextRef.current) {
             const ctx = outputAudioContextRef.current;
@@ -226,20 +363,15 @@ const App: React.FC = () => {
             src.start(nextStartTimeRef.current); nextStartTimeRef.current += buf.duration;
             sourcesRef.current.add(src); src.onended = () => sourcesRef.current.delete(src);
           }
-
-          // Handle Transcriptions for History Tracking
           if (message.serverContent?.inputTranscription) {
             currentInputTranscriptionRef.current += message.serverContent.inputTranscription.text;
           }
           if (message.serverContent?.outputTranscription) {
             currentOutputTranscriptionRef.current += message.serverContent.outputTranscription.text;
           }
-
-          // When turn is complete, sync the transcriptions to message history for download
           if (message.serverContent?.turnComplete) {
             const userInput = currentInputTranscriptionRef.current.trim();
             const tutorOutput = currentOutputTranscriptionRef.current.trim();
-            
             if (userInput || tutorOutput) {
               setMessages(prev => {
                 const updated = [...prev];
@@ -248,7 +380,6 @@ const App: React.FC = () => {
                 return updated;
               });
             }
-            
             currentInputTranscriptionRef.current = '';
             currentOutputTranscriptionRef.current = '';
           }
@@ -278,7 +409,7 @@ const App: React.FC = () => {
       setMessages(prev => [...prev, { 
         id: 'a'+Date.now(), 
         role: 'assistant', 
-        content: res.text || "Reasoning processed according to 2026 syllabus standards. Let's move to the next stage.", 
+        content: res.text || "Reasoning processed. Let's continue.", 
         timestamp: new Date(),
         groundingChunks: res.candidates?.[0]?.groundingMetadata?.groundingChunks as any
       }]);
@@ -296,35 +427,19 @@ const App: React.FC = () => {
       <html lang="en">
       <head>
         <meta charset="UTF-8">
-        <title>Pocket Tutor Session Log - ${selectedSubject.id} (2026 Curriculum)</title>
+        <title>Pocket Tutor Session Log - ${selectedSubject.id} (2026)</title>
         <style>
-          body { 
-            font-family: "Times New Roman", Times, serif; 
-            padding: 50px; 
-            line-height: 1.6; 
-            max-width: 900px; 
-            margin: auto; 
-            color: #1a1a1a;
-          }
-          h1 { border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 30px; }
-          .meta { margin-bottom: 40px; font-style: italic; color: #555; }
-          .message { margin-bottom: 30px; }
-          .role { font-weight: bold; text-transform: uppercase; display: block; margin-bottom: 5px; color: #000; }
-          .timestamp { font-size: 0.85em; color: #888; margin-left: 10px; font-weight: normal; }
-          .content { background: #fdfdfd; padding: 20px; border-left: 5px solid #ccc; white-space: pre-wrap; font-size: 1.1em; }
+          body { font-family: sans-serif; padding: 50px; line-height: 1.6; max-width: 900px; margin: auto; }
+          .message { margin-bottom: 30px; border-bottom: 1px solid #eee; padding-bottom: 20px; }
+          .role { font-weight: bold; }
+          .content { white-space: pre-wrap; margin-top: 10px; }
         </style>
       </head>
       <body>
-        <h1>NAMIBIAN ACADEMY SESSION LOG (2026)</h1>
-        <div class="meta">
-          <p><strong>Level:</strong> ${selectedLevel}</p>
-          <p><strong>Subject:</strong> ${selectedSubject.id}</p>
-          <p><strong>Student:</strong> ${currentUser?.name}</p>
-          <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
-        </div>
+        <h1>Session Log - ${selectedSubject.id}</h1>
         ${messages.map(msg => `
           <div class="message">
-            <span class="role">${msg.role === 'user' ? 'STUDENT' : 'TUTOR'} <span class="timestamp">${msg.timestamp.toLocaleString()}</span></span>
+            <div class="role">${msg.role.toUpperCase()}</div>
             <div class="content">${msg.content}</div>
           </div>
         `).join('')}
@@ -335,12 +450,10 @@ const App: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `Academy_Session_2026_${selectedSubject.id}_${Date.now()}.html`;
+    link.download = `Session_2026_${selectedSubject.id}_${Date.now()}.html`;
     link.click();
-    URL.revokeObjectURL(url);
   };
 
-  // --- Breadcrumb Navigation ---
   const NavBreadcrumbs = () => {
     if (!currentUser) return null;
     return (
@@ -350,7 +463,7 @@ const App: React.FC = () => {
           <>
             <span>/</span>
             <button onClick={() => resetChat()} className={`hover:text-blue-600 transition-colors ${!selectedSubject ? 'text-slate-900' : ''}`}>
-              {selectedLevel} (2026 Curriculum)
+              {selectedLevel} (2026)
             </button>
           </>
         )}
@@ -372,38 +485,65 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen bg-slate-950 text-white p-8 overflow-y-auto relative">
         <BackgroundBlobs />
-        <div className="max-w-6xl mx-auto relative z-10">
+        <div className="max-w-7xl mx-auto relative z-10">
           <header className="flex justify-between items-center mb-12">
-            <h1 className="text-4xl font-black bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">Admin Command</h1>
+            <div>
+              <h1 className="text-4xl font-black bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">Nexus Administration</h1>
+              <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.3em] mt-2">Managing the 2026 Academic Nodes</p>
+            </div>
             <div className="flex gap-4">
-              <button onClick={() => setIsAdminPanelOpen(false)} className="glass px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-widest">App View</button>
+              <button onClick={fetchUsers} className={`glass px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-widest ${isLoadingUsers ? 'animate-pulse' : ''}`}>
+                {isLoadingUsers ? 'Syncing...' : 'Sync Nodes'}
+              </button>
+              <button onClick={() => setIsAdminPanelOpen(false)} className="glass px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-widest">Client View</button>
               <button onClick={logout} className="bg-red-500/20 text-red-500 px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-widest">Logout</button>
             </div>
           </header>
-          <div className="glass rounded-3xl p-8 border border-white/10">
-             <table className="w-full text-left">
+          <div className="glass rounded-3xl p-8 border border-white/10 overflow-x-auto">
+             <table className="w-full text-left min-w-[1000px]">
                <thead>
                  <tr className="border-b border-white/10 text-slate-500 text-[10px] uppercase font-black">
-                   <th className="py-4">Student</th>
-                   <th className="py-4">Phone</th>
-                   <th className="py-4">Status</th>
-                   <th className="py-4 text-right">Actions</th>
+                   <th className="py-4 px-2">Student Name</th>
+                   <th className="py-4 px-2">Cellphone</th>
+                   <th className="py-4 px-2">Mastery Key</th>
+                   <th className="py-4 px-2">Role</th>
+                   <th className="py-4 px-2">Status</th>
+                   <th className="py-4 px-2">Trial Start</th>
+                   <th className="py-4 px-2 text-right">Operations</th>
                  </tr>
                </thead>
                <tbody>
-                 {allUsers.map(u => (
-                   <tr key={u.id} className="border-b border-white/5 hover:bg-white/5 transition-colors">
-                     <td className="py-4 font-bold">{u.name}</td>
-                     <td className="py-4 text-slate-400">{u.phone}</td>
-                     <td className="py-4">
-                        <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase ${u.status === 'approved' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}>{u.status}</span>
-                     </td>
-                     <td className="py-4 text-right">
-                        {u.status === 'pending' && <button onClick={() => setAllUsers(allUsers.map(usr => usr.id === u.id ? {...usr, status: 'approved'} : usr))} className="bg-emerald-500 text-white px-4 py-1.5 rounded-lg text-[10px] font-black uppercase">Approve</button>}
-                        {u.status === 'approved' && <button onClick={() => setAllUsers(allUsers.map(usr => usr.id === u.id ? {...usr, status: 'revoked'} : usr))} className="bg-red-500/20 text-red-500 px-4 py-1.5 rounded-lg text-[10px] font-black uppercase ml-2">Revoke</button>}
-                     </td>
-                   </tr>
-                 ))}
+                 {allUsers.length === 0 ? (
+                   <tr><td colSpan={7} className="py-12 text-center text-slate-500 font-bold uppercase tracking-widest">No nodes registered in the system</td></tr>
+                 ) : (
+                   allUsers.map(u => (
+                    <tr key={u.id || u.phone} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                      <td className="py-4 px-2 font-bold">{u.name}</td>
+                      <td className="py-4 px-2 text-slate-400 font-mono">{u.phone}</td>
+                      <td className="py-4 px-2 text-slate-400 font-mono">{u.password}</td>
+                      <td className="py-4 px-2">
+                        <span className="bg-slate-800 text-slate-300 px-2 py-1 rounded text-[9px] font-black uppercase">{u.role}</span>
+                      </td>
+                      <td className="py-4 px-2">
+                         <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase ${u.status === 'approved' ? 'bg-emerald-500/20 text-emerald-400' : u.status === 'revoked' ? 'bg-red-500/20 text-red-400' : 'bg-amber-500/20 text-amber-400'}`}>
+                           {u.status}
+                         </span>
+                      </td>
+                      <td className="py-4 px-2 text-slate-400 text-[10px] font-bold">{u.trialStart}</td>
+                      <td className="py-4 px-2 text-right">
+                         <div className="flex justify-end gap-2">
+                           {u.status !== 'approved' && (
+                             <button onClick={() => handleApproveUser(u.phone)} className="bg-emerald-500 hover:bg-emerald-400 text-white px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-colors">Approve</button>
+                           )}
+                           {u.status === 'approved' && (
+                             <button onClick={() => handleRevokeUser(u.phone)} className="bg-red-500/20 hover:bg-red-500/40 text-red-400 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-colors">Revoke</button>
+                           )}
+                           <button onClick={() => handleDeleteUser(u.phone)} className="bg-slate-800 hover:bg-red-900/50 text-slate-400 hover:text-white px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-colors">Delete</button>
+                         </div>
+                      </td>
+                    </tr>
+                   ))
+                 )}
                </tbody>
              </table>
           </div>
@@ -486,11 +626,12 @@ const App: React.FC = () => {
                   </div>
                 </div>
                 <div className="mt-8 p-6 bg-slate-950 rounded-2xl text-center">
-                  <p className="text-[11px] font-black text-slate-100 uppercase tracking-widest leading-relaxed">use 0813879841 for enquiry and payment</p>
+                  <p className="text-[11px] font-black text-slate-100 uppercase tracking-widest leading-relaxed">
+                    use 0813879841 for enquiry and payment; N$250 yearly access
+                  </p>
                 </div>
               </div>
             )}
-
           </div>
         </div>
       </div>
@@ -583,7 +724,7 @@ const App: React.FC = () => {
             </button>
           )}
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-            For audio lessons use your device recorder.
+            Logged in as: {currentUser?.name}
           </p>
         </div>
       </header>
@@ -600,15 +741,11 @@ const App: React.FC = () => {
                     {msg.groundingChunks.map((chunk, i) => chunk.web && (
                       <a key={i} href={chunk.web.uri} target="_blank" rel="noopener noreferrer" className="text-[10px] font-black bg-slate-50 text-slate-500 px-4 py-2 rounded-xl border border-slate-100 hover:bg-indigo-50 hover:text-indigo-600 transition-all flex items-center gap-2">
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-                        {chunk.web.title || 'Official Curriculum Resource'}
+                        {chunk.web.title || 'Official Resource'}
                       </a>
                     ))}
                   </div>
                 )}
-                <div className="flex justify-between mt-6 text-[10px] font-black uppercase tracking-widest opacity-40">
-                   <span>{msg.role === 'user' ? 'Scholar Identity' : '2026 Syllabus Node'}</span>
-                   <span>{msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                </div>
               </div>
             </div>
           ))}
@@ -626,11 +763,11 @@ const App: React.FC = () => {
               type="text" 
               value={inputValue} 
               onChange={(e) => setInputValue(e.target.value)} 
-              placeholder={isVoiceActive ? "Neural audio established..." : "Contribute your logic to the 2026 syllabus..."} 
-              className="w-full bg-white border-slate-200 border rounded-[2.5rem] pl-10 pr-20 py-6 font-bold text-lg shadow-xl focus:ring-[16px] focus:ring-indigo-50 outline-none transition-all placeholder:text-slate-300" 
+              placeholder={isVoiceActive ? "Voice mode enabled..." : "Ask your question..."} 
+              className="w-full bg-white border-slate-200 border rounded-[2.5rem] pl-10 pr-20 py-6 font-bold text-lg shadow-xl focus:ring-[16px] focus:ring-indigo-50 outline-none transition-all" 
               disabled={isVoiceActive} 
             />
-            <button type="submit" disabled={!inputValue.trim() || isVoiceActive} className={`absolute right-4 p-4 rounded-[1.5rem] transition-all ${!inputValue.trim() ? 'text-slate-200' : 'bg-slate-950 text-white hover:scale-105 shadow-xl'}`}>
+            <button type="submit" disabled={!inputValue.trim() || isVoiceActive} className={`absolute right-4 p-4 rounded-[1.5rem] transition-all ${!inputValue.trim() ? 'text-slate-200' : 'bg-slate-950 text-white'}`}>
               <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg>
             </button>
           </form>
