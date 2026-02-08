@@ -1,7 +1,7 @@
 
 export type Level = 'NSSCO' | 'NSSCAS';
+export type UserStatus = 'pending' | 'approved' | 'revoked';
 
-// Expanded Subject type to include all subjects offered in the Namibian NSSC curriculum as used in constants.tsx
 export type Subject = 
   | 'Mathematics' 
   | 'Physics' 
@@ -12,16 +12,17 @@ export type Subject =
   | 'Accounting' 
   | 'Geography'
   | 'Business Studies'
-  | 'History'
+  | 'History' 
   | 'Development Studies'
   | 'Agriculture'
   | 'Computer Studies'
   | 'Entrepreneurship';
 
+// GroundingChunk matches the SDK's metadata structure for search grounding
 export interface GroundingChunk {
   web?: {
-    uri: string;
-    title: string;
+    uri?: string;
+    title?: string;
   };
 }
 
@@ -39,4 +40,14 @@ export interface SubjectOption {
   icon: string;
   color: string;
   description: string;
+}
+
+export interface AppUser {
+  id: string;
+  name: string;
+  phone: string;
+  email?: string; // For admin
+  password: string;
+  status: UserStatus;
+  isAdmin?: boolean;
 }
