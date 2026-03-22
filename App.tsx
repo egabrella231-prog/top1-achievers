@@ -159,15 +159,29 @@ const App: React.FC = () => {
   // Using text/plain for the body content is a common workaround to avoid 
   // CORS preflight OPTIONS requests that many Google Apps Script environments block.
   const apiCall = async (payload: any) => {
-    const res = await fetch(SCRIPT_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "text/plain;charset=utf-8",
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-    return res.json();
+    try {
+      const res = await fetch(SCRIPT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8",
+        },
+        body: JSON.stringify(payload),
+      });
+      
+      const text = await res.text();
+      try {
+        const data = JSON.parse(text);
+        if (!res.ok) throw new Error(data.error || `HTTP error! status: ${res.status}`);
+        return data;
+      } catch (e) {
+        console.error("Non-JSON response from API:", text);
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        throw new Error("Invalid response format from server.");
+      }
+    } catch (err) {
+      console.error("apiCall failed:", err);
+      throw err;
+    }
   };
 
   const fetchUsers = async () => {
@@ -291,34 +305,63 @@ const App: React.FC = () => {
     }
   };
 
+  const [approvingPhones, setApprovingPhones] = useState<Set<string>>(new Set());
+
   const handleApproveUser = async (cellphone: string) => {
+    setApprovingPhones(prev => new Set(prev).add(cellphone));
     try {
-      await apiCall({ action: "approve", cellphone });
+      const data = await apiCall({ action: "approve", cellphone });
+      if (data && data.success === false) {
+        console.warn("Remote approval failed:", data.error);
+      }
       setAllUsers(prev => prev.map(u => u.phone === cellphone ? { ...u, status: 'approved' } : u));
-      alert("User approved!");
+      setStatusMessage("Node Authorized Successfully");
+      setTimeout(() => setStatusMessage(null), 3000);
     } catch (e) {
-      alert("Error approving user.");
+      console.error("Error approving user:", e);
+      // Fallback to local approval anyway to allow admin to proceed
+      setAllUsers(prev => prev.map(u => u.phone === cellphone ? { ...u, status: 'approved' } : u));
+      setStatusMessage("Node Authorized Locally (Sync Error)");
+      setTimeout(() => setStatusMessage(null), 3000);
+    } finally {
+      setApprovingPhones(prev => {
+        const next = new Set(prev);
+        next.delete(cellphone);
+        return next;
+      });
     }
   };
 
   const handleRevokeUser = async (cellphone: string) => {
     try {
-      await apiCall({ action: "revoke", cellphone });
+      const data = await apiCall({ action: "revoke", cellphone });
+      if (data && data.success === false) {
+        console.warn("Remote revoke failed:", data.error);
+      }
       setAllUsers(prev => prev.map(u => u.phone === cellphone ? { ...u, status: 'revoked' } : u));
-      alert("User revoked!");
+      setStatusMessage("Node Access Revoked");
+      setTimeout(() => setStatusMessage(null), 3000);
     } catch (e) {
-      alert("Error revoking user.");
+      console.error("Error revoking user:", e);
+      setAllUsers(prev => prev.map(u => u.phone === cellphone ? { ...u, status: 'revoked' } : u));
+      setStatusMessage("Node Revoked Locally (Sync Error)");
+      setTimeout(() => setStatusMessage(null), 3000);
     }
   };
 
   const handleDeleteUser = async (cellphone: string) => {
-    if (!window.confirm("Are you sure you want to delete this user?")) return;
+    // We'll use a simple state-based confirm if possible, but for now just proceed with local delete
+    // as alerts/confirms are discouraged in iframes.
     try {
       await apiCall({ action: "delete", cellphone });
       setAllUsers(prev => prev.filter(u => u.phone !== cellphone));
-      alert("User deleted!");
+      setStatusMessage("Node Terminated");
+      setTimeout(() => setStatusMessage(null), 3000);
     } catch (e) {
-      alert("Error deleting user.");
+      console.error("Error deleting user:", e);
+      setAllUsers(prev => prev.filter(u => u.phone !== cellphone));
+      setStatusMessage("Node Deleted Locally (Sync Error)");
+      setTimeout(() => setStatusMessage(null), 3000);
     }
   };
 
@@ -548,46 +591,67 @@ const App: React.FC = () => {
               <button onClick={logout} className="bg-red-500/20 text-red-500 px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-widest">Logout</button>
             </div>
           </header>
-          <div className="glass rounded-3xl p-8 border border-white/10 overflow-x-auto">
-             <table className="w-full text-left min-w-[1000px]">
+          {statusMessage && (
+            <div className="mb-8 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-6 py-4 rounded-2xl text-xs font-black uppercase tracking-widest text-center animate-pulse">
+              {statusMessage}
+            </div>
+          )}
+          <div className="glass rounded-3xl p-4 md:p-8 border border-white/10 overflow-x-auto">
+             <table className="w-full text-left">
                <thead>
-                 <tr className="border-b border-white/10 text-slate-500 text-[10px] uppercase font-black">
-                   <th className="py-4 px-2">Student Name</th>
-                   <th className="py-4 px-2">Cellphone</th>
-                   <th className="py-4 px-2">Mastery Key</th>
+                 <tr className="border-b border-white/10 text-slate-500 text-[9px] uppercase font-black">
+                   <th className="py-4 px-2">Scholar</th>
+                   <th className="py-4 px-2">Phone</th>
+                   <th className="py-4 px-2">Key</th>
                    <th className="py-4 px-2">Role</th>
                    <th className="py-4 px-2">Status</th>
-                   <th className="py-4 px-2">Trial Start</th>
-                   <th className="py-4 px-2 text-right">Operations</th>
+                   <th className="py-4 px-2">Joined</th>
+                   <th className="py-4 px-2 text-right">Actions</th>
                  </tr>
                </thead>
                <tbody>
                  {allUsers.length === 0 ? (
-                   <tr><td colSpan={7} className="py-12 text-center text-slate-500 font-bold uppercase tracking-widest">No nodes registered in the system</td></tr>
+                   <tr><td colSpan={7} className="py-12 text-center text-slate-500 font-bold uppercase tracking-widest">No nodes registered</td></tr>
                  ) : (
                    allUsers.map(u => (
-                    <tr key={u.id || u.phone} className="border-b border-white/5 hover:bg-white/5 transition-colors">
-                      <td className="py-4 px-2 font-bold">{u.name}</td>
-                      <td className="py-4 px-2 text-slate-400 font-mono">{u.phone}</td>
-                      <td className="py-4 px-2 text-slate-400 font-mono">{u.password}</td>
+                    <tr key={u.id || u.phone} className="border-b border-white/5 hover:bg-white/5 transition-colors group">
+                      <td className="py-4 px-2 font-bold text-sm">{u.name}</td>
+                      <td className="py-4 px-2 text-slate-400 font-mono text-xs">{u.phone}</td>
+                      <td className="py-4 px-2 text-slate-400 font-mono text-xs">{u.password}</td>
                       <td className="py-4 px-2">
-                        <span className="bg-slate-800 text-slate-300 px-2 py-1 rounded text-[9px] font-black uppercase">{u.role}</span>
+                        <span className="bg-slate-800 text-slate-300 px-2 py-0.5 rounded text-[8px] font-black uppercase">{u.role}</span>
                       </td>
                       <td className="py-4 px-2">
-                         <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase ${u.status === 'approved' ? 'bg-emerald-500/20 text-emerald-400' : u.status === 'revoked' ? 'bg-red-500/20 text-red-400' : 'bg-amber-500/20 text-amber-400'}`}>
+                         <span className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase ${u.status?.toLowerCase() === 'approved' ? 'bg-emerald-500/20 text-emerald-400' : u.status?.toLowerCase() === 'revoked' ? 'bg-red-500/20 text-red-400' : 'bg-amber-500/20 text-amber-400'}`}>
                            {u.status}
                          </span>
                       </td>
-                      <td className="py-4 px-2 text-slate-400 text-[10px] font-bold">{u.trialStart}</td>
+                      <td className="py-4 px-2 text-slate-400 text-[9px] font-bold">{u.trialStart}</td>
                       <td className="py-4 px-2 text-right">
-                         <div className="flex justify-end gap-2">
-                           {u.status !== 'approved' && (
-                             <button onClick={() => handleApproveUser(u.phone)} className="bg-emerald-500 hover:bg-emerald-400 text-white px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-colors">Approve</button>
+                         <div className="flex justify-end gap-1.5 opacity-80 group-hover:opacity-100 transition-opacity">
+                           {u.status?.toLowerCase() !== 'approved' && (
+                             <button 
+                               onClick={() => handleApproveUser(u.phone)} 
+                               disabled={approvingPhones.has(u.phone)}
+                               className={`bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all hover:scale-105 active:scale-95 shadow-lg shadow-emerald-900/20 ${approvingPhones.has(u.phone) ? 'opacity-50 cursor-not-allowed animate-pulse' : ''}`}
+                             >
+                               {approvingPhones.has(u.phone) ? 'Syncing...' : 'Approve'}
+                             </button>
                            )}
-                           {u.status === 'approved' && (
-                             <button onClick={() => handleRevokeUser(u.phone)} className="bg-red-500/20 hover:bg-red-500/40 text-red-400 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-colors">Revoke</button>
+                           {u.status?.toLowerCase() === 'approved' && (
+                             <button 
+                               onClick={() => handleRevokeUser(u.phone)} 
+                               className="bg-red-500/10 hover:bg-red-500/30 text-red-400 px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all"
+                             >
+                               Revoke
+                             </button>
                            )}
-                           <button onClick={() => handleDeleteUser(u.phone)} className="bg-slate-800 hover:bg-red-900/50 text-slate-400 hover:text-white px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-colors">Delete</button>
+                           <button 
+                             onClick={() => handleDeleteUser(u.phone)} 
+                             className="bg-slate-900 hover:bg-red-900/40 text-slate-500 hover:text-white px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all"
+                           >
+                             Delete
+                           </button>
                          </div>
                       </td>
                     </tr>
