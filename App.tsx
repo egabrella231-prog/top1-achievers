@@ -5,12 +5,10 @@ import { SUBJECTS } from './constants';
 import { createChatInstance, connectTutorLive } from './services/geminiService';
 import { Chat, GenerateContentResponse, LiveServerMessage } from '@google/genai';
 
-// 🔗 Google Apps Script Backend URL
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxBoBi-r9aXK5STtx3Y8XFQKO4jxt8ikJ1aJVOZqGQm0RZrfzCrYdy5yI7IXg2O5pqD/exec";
-
 // --- Auth Constants ---
-const ADMIN_EMAIL = 'pemo60543@gmail.com';
-const ADMIN_PASSWORD = 'pemo12345509876!';
+const ADMIN_EMAIL = '+264813879841';
+const ADMIN_PASSWORD = '12345!';
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxBoBi-r9aXK5STtx3Y8XFQFQKO4jxt8ikJ1aJVOZqGQm0RZrfzCrYdy5yI7IXg2O5pqD/exec";
 
 // --- Audio Utilities ---
 function encode(bytes: Uint8Array) {
@@ -126,6 +124,7 @@ const App: React.FC = () => {
   // --- Refs ---
   const chatRef = useRef<Chat | null>(null);
   const liveSessionRef = useRef<any>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputAudioContextRef = useRef<AudioContext | null>(null);
   const outputAudioContextRef = useRef<AudioContext | null>(null);
@@ -147,15 +146,34 @@ const App: React.FC = () => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, isTyping, isVoiceActive]);
 
-  // --- Handlers ---
+  useEffect(() => {
+    if (currentUser && !currentUser.isAdmin) {
+      const updated = allUsers.find(u => u.phone === currentUser.phone);
+      if (updated && (updated.status !== currentUser.status || updated.role !== currentUser.role)) {
+        setCurrentUser(updated);
+      }
+    }
+  }, [allUsers, currentUser]);
+
+  // --- API Helper ---
+  // Using text/plain for the body content is a common workaround to avoid 
+  // CORS preflight OPTIONS requests that many Google Apps Script environments block.
+  const apiCall = async (payload: any) => {
+    const res = await fetch(SCRIPT_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain;charset=utf-8",
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+    return res.json();
+  };
+
   const fetchUsers = async () => {
     setIsLoadingUsers(true);
     try {
-      const res = await fetch(SCRIPT_URL, {
-        method: "POST",
-        body: JSON.stringify({ action: "get_users" })
-      });
-      const data = await res.json();
+      const data = await apiCall({ action: "get_users" });
       if (data.success && Array.isArray(data.users)) {
         setAllUsers(data.users);
       }
@@ -168,6 +186,8 @@ const App: React.FC = () => {
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
+    setAuthError(null);
+    
     if (allUsers.find(u => u.phone === phoneField)) {
       setAuthError("Phone already registered.");
       return;
@@ -185,68 +205,78 @@ const App: React.FC = () => {
     };
 
     try {
-      await fetch(SCRIPT_URL, {
-        method: "POST",
-        body: JSON.stringify({
-          action: "register",
-          name: nameField,
-          cellphone: phoneField,
-          password: passwordField,
-          role: 'student',
-          status: 'pending',
-          trialStart: trialStart
-        })
+      // Try remote registration
+      await apiCall({
+        action: "register",
+        name: nameField,
+        cellphone: phoneField,
+        password: passwordField,
+        role: 'student',
+        status: 'pending',
+        trialStart: trialStart
       });
-      setAllUsers([...allUsers, newUser]);
       setAuthSuccess("Enrollment received! Awaiting approval. Please ensure payment is completed via the methods below.");
+    } catch (err) {
+      // Fallback to local-only registration if script is down
+      console.warn("Remote registration failed, using local fallback", err);
+      setAuthSuccess("Enrollment stored locally (Offline Mode). Awaiting manual approval.");
+    } finally {
+      setAllUsers(prev => [...prev, newUser]);
       setAuthView('login');
       setNameField('');
       setPhoneField('');
       setPasswordField('');
-    } catch (err) {
-      setAuthError("Registration failed. Network error.");
     }
   };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setAuthError(null);
+
+    // 1. Try Remote Login First
     try {
-      const res = await fetch(SCRIPT_URL, {
-        method: "POST",
-        body: JSON.stringify({
-          action: "login",
-          cellphone: phoneField,
-          password: passwordField
-        })
+      const data = await apiCall({
+        action: "login",
+        cellphone: phoneField,
+        password: passwordField
       });
-      const data = await res.json();
-      if (!data.success) {
-        setAuthError("Account not approved or wrong credentials.");
+      
+      if (data.success) {
+        setCurrentUser({
+          id: data.id || 'usr-' + Date.now(),
+          name: data.name || 'Scholar',
+          phone: phoneField,
+          role: data.role || 'student',
+          status: data.status || 'approved',
+          password: passwordField,
+          trialStart: data.trialStart || 'N/A'
+        });
+        setPhoneField('');
+        setPasswordField('');
         return;
       }
-      setCurrentUser({
-        id: data.id || 'usr-' + Date.now(),
-        name: data.name || 'Scholar',
-        phone: phoneField,
-        role: data.role || 'student',
-        status: data.status || 'approved',
-        password: passwordField,
-        trialStart: data.trialStart || 'N/A'
-      });
+    } catch (err) {
+      console.warn("Remote login failed, checking local nodes...", err);
+    }
+
+    // 2. Fallback to Local Login
+    const localUser = allUsers.find(u => u.phone === phoneField && u.password === passwordField);
+    if (localUser) {
+      setCurrentUser(localUser);
       setPhoneField('');
       setPasswordField('');
-    } catch (err) {
-      setAuthError("Connection error. Try again.");
+    } else {
+      setAuthError("Invalid credentials or node not found. Ensure you have registered.");
     }
   };
 
   const handleAdminLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (emailField === ADMIN_EMAIL && passwordField === ADMIN_PASSWORD) {
+    if ((emailField === ADMIN_EMAIL || emailField === '2') && passwordField === ADMIN_PASSWORD) {
       const admin: AppUser = {
-        id: 'admin',
+        id: '2',
         name: 'Nexus Master',
-        phone: 'SYSTEM',
+        phone: '+264813879841',
         status: 'approved',
         role: 'admin',
         password: ADMIN_PASSWORD,
@@ -263,10 +293,7 @@ const App: React.FC = () => {
 
   const handleApproveUser = async (cellphone: string) => {
     try {
-      await fetch(SCRIPT_URL, {
-        method: "POST",
-        body: JSON.stringify({ action: "approve", cellphone })
-      });
+      await apiCall({ action: "approve", cellphone });
       setAllUsers(prev => prev.map(u => u.phone === cellphone ? { ...u, status: 'approved' } : u));
       alert("User approved!");
     } catch (e) {
@@ -276,10 +303,7 @@ const App: React.FC = () => {
 
   const handleRevokeUser = async (cellphone: string) => {
     try {
-      await fetch(SCRIPT_URL, {
-        method: "POST",
-        body: JSON.stringify({ action: "revoke", cellphone })
-      });
+      await apiCall({ action: "revoke", cellphone });
       setAllUsers(prev => prev.map(u => u.phone === cellphone ? { ...u, status: 'revoked' } : u));
       alert("User revoked!");
     } catch (e) {
@@ -290,10 +314,7 @@ const App: React.FC = () => {
   const handleDeleteUser = async (cellphone: string) => {
     if (!window.confirm("Are you sure you want to delete this user?")) return;
     try {
-      await fetch(SCRIPT_URL, {
-        method: "POST",
-        body: JSON.stringify({ action: "delete", cellphone })
-      });
+      await apiCall({ action: "delete", cellphone });
       setAllUsers(prev => prev.filter(u => u.phone !== cellphone));
       alert("User deleted!");
     } catch (e) {
@@ -308,11 +329,17 @@ const App: React.FC = () => {
   };
 
   const stopVoiceMode = useCallback(() => {
+    setIsVoiceActive(false);
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
     if (liveSessionRef.current) { liveSessionRef.current.then((s: any) => s.close()); liveSessionRef.current = null; }
     if (inputAudioContextRef.current) { inputAudioContextRef.current.close(); inputAudioContextRef.current = null; }
     if (outputAudioContextRef.current) { outputAudioContextRef.current.close(); outputAudioContextRef.current = null; }
-    sourcesRef.current.forEach(s => s.stop()); sourcesRef.current.clear();
-    setIsVoiceActive(false); setStatusMessage(null);
+    sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
+    sourcesRef.current.clear();
+    setStatusMessage(null);
     currentInputTranscriptionRef.current = '';
     currentOutputTranscriptionRef.current = '';
   }, []);
@@ -332,6 +359,7 @@ const App: React.FC = () => {
           sampleRate: 16000
         } 
       });
+      streamRef.current = stream;
 
       const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
@@ -349,25 +377,44 @@ const App: React.FC = () => {
             const data = e.inputBuffer.getChannelData(0);
             const int16 = new Int16Array(data.length);
             for (let i = 0; i < data.length; i++) int16[i] = data[i] * 32768;
-            sessionPromise.then(s => s.sendRealtimeInput({ media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' } }));
+            sessionPromise.then(s => s.sendRealtimeInput({ audio: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' } }));
           };
           source.connect(processor); processor.connect(inputCtx.destination);
         },
         onmessage: async (message: LiveServerMessage) => {
-          const audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-          if (audio && outputAudioContextRef.current) {
-            const ctx = outputAudioContextRef.current;
-            nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
-            const buf = await decodeAudioData(decode(audio), ctx, 24000, 1);
-            const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination);
-            src.start(nextStartTimeRef.current); nextStartTimeRef.current += buf.duration;
-            sourcesRef.current.add(src); src.onended = () => sourcesRef.current.delete(src);
+          if (message.serverContent?.interrupted) {
+            sourcesRef.current.forEach(s => {
+              try { s.stop(); } catch (e) {}
+            });
+            sourcesRef.current.clear();
+            if (outputAudioContextRef.current) {
+              nextStartTimeRef.current = outputAudioContextRef.current.currentTime;
+            }
           }
+
+          if (message.serverContent?.modelTurn?.parts) {
+            for (const part of message.serverContent.modelTurn.parts) {
+              const audio = part.inlineData?.data;
+              if (audio && outputAudioContextRef.current) {
+                const ctx = outputAudioContextRef.current;
+                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
+                const buf = await decodeAudioData(decode(audio), ctx, 24000, 1);
+                const src = ctx.createBufferSource();
+                src.buffer = buf;
+                src.connect(ctx.destination);
+                src.start(nextStartTimeRef.current);
+                nextStartTimeRef.current += buf.duration;
+                sourcesRef.current.add(src);
+                src.onended = () => sourcesRef.current.delete(src);
+              }
+            }
+          }
+
           if (message.serverContent?.inputTranscription) {
-            currentInputTranscriptionRef.current += message.serverContent.inputTranscription.text;
+            currentInputTranscriptionRef.current += (message.serverContent.inputTranscription.text || '');
           }
           if (message.serverContent?.outputTranscription) {
-            currentOutputTranscriptionRef.current += message.serverContent.outputTranscription.text;
+            currentOutputTranscriptionRef.current += (message.serverContent.outputTranscription.text || '');
           }
           if (message.serverContent?.turnComplete) {
             const userInput = currentInputTranscriptionRef.current.trim();
@@ -458,7 +505,9 @@ const App: React.FC = () => {
     if (!currentUser) return null;
     return (
       <div className="flex items-center gap-2 px-8 py-3 bg-white/50 backdrop-blur-md border-b border-white/20 sticky top-0 z-50 text-[10px] font-black uppercase tracking-widest text-slate-500">
-        <button onClick={() => { setSelectedLevel(null); resetChat(); }} className="hover:text-blue-600 transition-colors">Academy Root</button>
+        <button onClick={() => { setSelectedLevel(null); resetChat(); }} className="hover:text-blue-600 transition-all p-1.5 rounded-lg hover:bg-slate-100 flex items-center justify-center" title="Exit to Menu">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+        </button>
         {selectedLevel && (
           <>
             <span>/</span>
@@ -552,6 +601,34 @@ const App: React.FC = () => {
     );
   }
 
+  if (currentUser && currentUser.status !== 'approved' && !currentUser.isAdmin) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6 bg-slate-50 relative overflow-hidden">
+        <BackgroundBlobs />
+        <div className="max-w-md w-full relative z-10 text-center">
+           <div className="glass rounded-[2.5rem] shadow-2xl p-10 border border-white">
+              <div className="w-20 h-20 bg-amber-100 text-amber-600 rounded-3xl flex items-center justify-center text-3xl mx-auto mb-8 animate-pulse">⏳</div>
+              <h2 className="text-3xl font-black mb-4 text-slate-800">Enrollment Pending</h2>
+              <p className="text-slate-500 text-sm font-bold leading-relaxed mb-8">
+                Your academic node is registered but awaits manual authorization by the Nexus Master. 
+                Please ensure your N$250 yearly access fee is processed.
+              </p>
+              <div className="bg-slate-950 text-white p-6 rounded-2xl mb-8 text-left">
+                 <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Payment Details</p>
+                 <p className="text-xs font-bold leading-relaxed">Send N$250 to +264813879841 via eWallet, EasyWallet, or Blue Wallet.</p>
+              </div>
+              <div className="flex flex-col gap-4">
+                <button onClick={fetchUsers} className={`w-full bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-lg hover:scale-105 transition-all text-[11px] uppercase tracking-widest ${isLoadingUsers ? 'animate-pulse' : ''}`}>
+                  {isLoadingUsers ? 'Syncing...' : 'Check Approval Status'}
+                </button>
+                <button onClick={logout} className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-red-500">Terminate Session</button>
+              </div>
+           </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!currentUser) {
     return (
       <div className="min-h-screen flex items-center justify-center p-6 bg-slate-50 relative overflow-hidden">
@@ -576,7 +653,7 @@ const App: React.FC = () => {
                 {authView === 'admin_login' ? (
                   <div className="space-y-2">
                     <label className="text-[10px] font-black uppercase ml-4 text-slate-400">Admin Identity</label>
-                    <input type="email" value={emailField} onChange={(e) => setEmailField(e.target.value)} required className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 focus:ring-4 focus:ring-indigo-100 outline-none font-bold shadow-sm" />
+                    <input type="text" value={emailField} onChange={(e) => setEmailField(e.target.value)} required className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 focus:ring-4 focus:ring-indigo-100 outline-none font-bold shadow-sm" placeholder="ID or Phone" />
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -627,7 +704,7 @@ const App: React.FC = () => {
                 </div>
                 <div className="mt-8 p-6 bg-slate-950 rounded-2xl text-center">
                   <p className="text-[11px] font-black text-slate-100 uppercase tracking-widest leading-relaxed">
-                    use 0813879841 for enquiry and payment; N$250 yearly access
+                    use +264813879841 for enquiry and payment; N$250 yearly access
                   </p>
                 </div>
               </div>
@@ -658,7 +735,7 @@ const App: React.FC = () => {
               <button onClick={() => setSelectedLevel('NSSCO')} className="group glass p-16 rounded-[3.5rem] shadow-2xl hover:scale-105 transition-all flex flex-col items-center flex-1 border border-white">
                 <div className="bg-emerald-500 text-white w-24 h-24 rounded-3xl flex items-center justify-center text-4xl font-black mb-10 shadow-xl shadow-emerald-200 group-hover:rotate-6 transition-transform">O</div>
                 <h3 className="text-4xl font-black mb-3">NSSCO</h3>
-                <p className="text-slate-400 text-sm font-bold uppercase tracking-widest">Ordinary Level (Gr 10-11) 2026</p>
+                <p className="text-slate-400 text-sm font-bold uppercase tracking-widest">Ordinary Level (Gr 11-12) 2026</p>
               </button>
             </div>
             <button onClick={logout} className="mt-20 text-[11px] font-black text-slate-300 uppercase tracking-[0.3em] hover:text-red-500 transition-colors">Terminate Node</button>
@@ -765,10 +842,9 @@ const App: React.FC = () => {
               onChange={(e) => setInputValue(e.target.value)} 
               placeholder={isVoiceActive ? "Voice mode enabled..." : "Ask your question..."} 
               className="w-full bg-white border-slate-200 border rounded-[2.5rem] pl-10 pr-20 py-6 font-bold text-lg shadow-xl focus:ring-[16px] focus:ring-indigo-50 outline-none transition-all" 
-              disabled={isVoiceActive} 
             />
-            <button type="submit" disabled={!inputValue.trim() || isVoiceActive} className={`absolute right-4 p-4 rounded-[1.5rem] transition-all ${!inputValue.trim() ? 'text-slate-200' : 'bg-slate-950 text-white'}`}>
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg>
+            <button type="submit" className="absolute right-4 p-4 bg-indigo-600 text-white rounded-2xl shadow-lg hover:scale-110 active:scale-95 transition-all">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M13 5l7 7-7 7M5 5l7 7-7 7" /></svg>
             </button>
           </form>
         </div>

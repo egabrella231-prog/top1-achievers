@@ -14,7 +14,7 @@ export const SUBJECTS: SubjectOption[] = [
   { id: 'English', level: 'NSSCAS', icon: '📖', color: 'bg-emerald-600', description: 'Literary Analysis and Advanced Rhetoric.' },
   { id: 'History', level: 'NSSCAS', icon: '🏛️', color: 'bg-stone-600', description: 'International Relations and Modern Conflicts.' },
 
-  // NSSCO (Ordinary Level - Grade 10-11)
+  // NSSCO (Ordinary Level - Grade 11-12)
   { id: 'Mathematics', level: 'NSSCO', icon: '÷', color: 'bg-blue-400', description: 'Fundamental Algebra, Geometry, and Statistics.' },
   { id: 'Physics', level: 'NSSCO', icon: '💡', color: 'bg-indigo-400', description: 'Energy, Motion, and Basic Electricity.' },
   { id: 'Chemistry', level: 'NSSCO', icon: '🔥', color: 'bg-rose-400', description: 'Chemical Reactions and Matter Properties.' },

@@ -18,9 +18,9 @@ const getSystemInstruction = (subject: Subject, level: Level) => `
 `.trim();
 
 export const createChatInstance = (subject: Subject, level: Level) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   return ai.chats.create({
-    model: 'gemini-3-pro-preview',
+    model: 'gemini-3.1-pro-preview',
     config: {
       systemInstruction: getSystemInstruction(subject, level),
       temperature: 0.7,
@@ -39,7 +39,7 @@ export const connectTutorLive = (
     onclose: (e: CloseEvent) => void;
   }
 ) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   return ai.live.connect({
     model: 'gemini-2.5-flash-native-audio-preview-12-2025',
     callbacks,
