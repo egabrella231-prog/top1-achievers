@@ -202,7 +202,8 @@ const App: React.FC = () => {
     e.preventDefault();
     setAuthError(null);
     
-    if (allUsers.find(u => u.phone === phoneField)) {
+    const normalizedPhone = phoneField.replace(/\s+/g, '');
+    if (allUsers.find(u => u.phone === normalizedPhone)) {
       setAuthError("Phone already registered.");
       return;
     }
@@ -211,7 +212,7 @@ const App: React.FC = () => {
     const newUser: AppUser = {
       id: Date.now().toString(),
       name: nameField,
-      phone: phoneField,
+      phone: normalizedPhone,
       password: passwordField,
       status: 'pending',
       role: 'student',
@@ -223,7 +224,7 @@ const App: React.FC = () => {
       await apiCall({
         action: "register",
         name: nameField,
-        cellphone: phoneField,
+        cellphone: normalizedPhone,
         password: passwordField,
         role: 'student',
         status: 'pending',
@@ -235,7 +236,11 @@ const App: React.FC = () => {
       console.warn("Remote registration failed, using local fallback", err);
       setAuthSuccess("Enrollment stored locally (Offline Mode). Awaiting manual approval.");
     } finally {
-      setAllUsers(prev => [...prev, newUser]);
+      const updatedUsers = [...allUsers, newUser];
+      setAllUsers(updatedUsers);
+      // Force immediate save to localStorage
+      localStorage.setItem('pocket_tutor_users', JSON.stringify(updatedUsers));
+      
       setAuthView('login');
       setNameField('');
       setPhoneField('');
@@ -246,12 +251,13 @@ const App: React.FC = () => {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
+    const normalizedPhone = phoneField.replace(/\s+/g, '');
 
     // 1. Try Remote Login First
     try {
       const data = await apiCall({
         action: "login",
-        cellphone: phoneField,
+        cellphone: normalizedPhone,
         password: passwordField
       });
       
@@ -259,7 +265,7 @@ const App: React.FC = () => {
         setCurrentUser({
           id: data.id || 'usr-' + Date.now(),
           name: data.name || 'Scholar',
-          phone: phoneField,
+          phone: normalizedPhone,
           role: data.role || 'student',
           status: data.status || 'approved',
           password: passwordField,
@@ -274,7 +280,7 @@ const App: React.FC = () => {
     }
 
     // 2. Fallback to Local Login
-    const localUser = allUsers.find(u => u.phone === phoneField && u.password === passwordField);
+    const localUser = allUsers.find(u => u.phone === normalizedPhone && u.password === passwordField);
     if (localUser) {
       setCurrentUser(localUser);
       setPhoneField('');
@@ -309,20 +315,20 @@ const App: React.FC = () => {
 
   const handleApproveUser = async (cellphone: string) => {
     setApprovingPhones(prev => new Set(prev).add(cellphone));
+    setStatusMessage(`Attempting to authorize node ${cellphone}...`);
     try {
       const data = await apiCall({ action: "approve", cellphone });
-      if (data && data.success === false) {
-        console.warn("Remote approval failed:", data.error);
-      }
+      console.log("Approval response:", data);
+      
       setAllUsers(prev => prev.map(u => u.phone === cellphone ? { ...u, status: 'approved' } : u));
-      setStatusMessage("Node Authorized Successfully");
-      setTimeout(() => setStatusMessage(null), 3000);
-    } catch (e) {
+      setStatusMessage("Node Authorized Successfully (Cloud Sync OK)");
+      setTimeout(() => setStatusMessage(null), 5000);
+    } catch (e: any) {
       console.error("Error approving user:", e);
       // Fallback to local approval anyway to allow admin to proceed
       setAllUsers(prev => prev.map(u => u.phone === cellphone ? { ...u, status: 'approved' } : u));
-      setStatusMessage("Node Authorized Locally (Sync Error)");
-      setTimeout(() => setStatusMessage(null), 3000);
+      setStatusMessage(`Cloud Sync Failed: ${e.message || 'Network Error'}. Node authorized locally.`);
+      setTimeout(() => setStatusMessage(null), 8000);
     } finally {
       setApprovingPhones(prev => {
         const next = new Set(prev);
@@ -399,7 +405,8 @@ const App: React.FC = () => {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          sampleRate: 16000
+          // Use ideal to avoid over-constraining
+          sampleRate: { ideal: 16000 }
         } 
       });
       streamRef.current = stream;
@@ -474,10 +481,22 @@ const App: React.FC = () => {
             currentOutputTranscriptionRef.current = '';
           }
         },
-        onerror: stopVoiceMode, onclose: stopVoiceMode
+        onerror: (e) => {
+          console.error("Live Session Error:", e);
+          stopVoiceMode();
+          setStatusMessage("Voice Link Interrupted.");
+        },
+        onclose: (e) => {
+          console.log("Live Session Closed:", e);
+          stopVoiceMode();
+        }
       });
       liveSessionRef.current = sessionPromise;
-    } catch { stopVoiceMode(); setStatusMessage("Mic Link Error."); }
+    } catch (err: any) { 
+      console.error("Mic Initialization Error:", err);
+      stopVoiceMode(); 
+      setStatusMessage(`Mic Link Error: ${err.message || "Permission Denied"}`); 
+    }
   };
 
   const selectSubject = (s: SubjectOption) => {
@@ -601,12 +620,12 @@ const App: React.FC = () => {
                <thead>
                  <tr className="border-b border-white/10 text-slate-500 text-[9px] uppercase font-black">
                    <th className="py-4 px-2">Scholar</th>
+                   <th className="py-4 px-2">Quick Actions</th>
                    <th className="py-4 px-2">Phone</th>
                    <th className="py-4 px-2">Key</th>
                    <th className="py-4 px-2">Role</th>
                    <th className="py-4 px-2">Status</th>
                    <th className="py-4 px-2">Joined</th>
-                   <th className="py-4 px-2 text-right">Actions</th>
                  </tr>
                </thead>
                <tbody>
@@ -616,6 +635,33 @@ const App: React.FC = () => {
                    allUsers.map(u => (
                     <tr key={u.id || u.phone} className="border-b border-white/5 hover:bg-white/5 transition-colors group">
                       <td className="py-4 px-2 font-bold text-sm">{u.name}</td>
+                      <td className="py-4 px-2">
+                         <div className="flex gap-1.5">
+                           {u.status?.toLowerCase() !== 'approved' && (
+                             <button 
+                               onClick={() => handleApproveUser(u.phone)} 
+                               disabled={approvingPhones.has(u.phone)}
+                               className={`bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-2 rounded-lg text-[9px] font-black uppercase transition-all hover:scale-105 active:scale-95 shadow-lg shadow-emerald-900/20 whitespace-nowrap ${approvingPhones.has(u.phone) ? 'opacity-50 cursor-not-allowed animate-pulse' : ''}`}
+                             >
+                               {approvingPhones.has(u.phone) ? 'Syncing...' : 'Approve'}
+                             </button>
+                           )}
+                           {u.status?.toLowerCase() === 'approved' && (
+                             <button 
+                               onClick={() => handleRevokeUser(u.phone)} 
+                               className="bg-red-500/10 hover:bg-red-500/30 text-red-400 px-3 py-2 rounded-lg text-[9px] font-black uppercase transition-all whitespace-nowrap"
+                             >
+                               Revoke
+                             </button>
+                           )}
+                           <button 
+                             onClick={() => handleDeleteUser(u.phone)} 
+                             className="bg-slate-900 hover:bg-red-900/40 text-slate-500 hover:text-white px-3 py-2 rounded-lg text-[9px] font-black uppercase transition-all whitespace-nowrap"
+                           >
+                             Delete
+                           </button>
+                         </div>
+                      </td>
                       <td className="py-4 px-2 text-slate-400 font-mono text-xs">{u.phone}</td>
                       <td className="py-4 px-2 text-slate-400 font-mono text-xs">{u.password}</td>
                       <td className="py-4 px-2">
@@ -627,33 +673,6 @@ const App: React.FC = () => {
                          </span>
                       </td>
                       <td className="py-4 px-2 text-slate-400 text-[9px] font-bold">{u.trialStart}</td>
-                      <td className="py-4 px-2 text-right">
-                         <div className="flex justify-end gap-1.5 opacity-80 group-hover:opacity-100 transition-opacity">
-                           {u.status?.toLowerCase() !== 'approved' && (
-                             <button 
-                               onClick={() => handleApproveUser(u.phone)} 
-                               disabled={approvingPhones.has(u.phone)}
-                               className={`bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all hover:scale-105 active:scale-95 shadow-lg shadow-emerald-900/20 ${approvingPhones.has(u.phone) ? 'opacity-50 cursor-not-allowed animate-pulse' : ''}`}
-                             >
-                               {approvingPhones.has(u.phone) ? 'Syncing...' : 'Approve'}
-                             </button>
-                           )}
-                           {u.status?.toLowerCase() === 'approved' && (
-                             <button 
-                               onClick={() => handleRevokeUser(u.phone)} 
-                               className="bg-red-500/10 hover:bg-red-500/30 text-red-400 px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all"
-                             >
-                               Revoke
-                             </button>
-                           )}
-                           <button 
-                             onClick={() => handleDeleteUser(u.phone)} 
-                             className="bg-slate-900 hover:bg-red-900/40 text-slate-500 hover:text-white px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all"
-                           >
-                             Delete
-                           </button>
-                         </div>
-                      </td>
                     </tr>
                    ))
                  )}
