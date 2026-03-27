@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, LiveServerMessage, Modality } from "@google/genai";
+import { GoogleGenAI, LiveServerMessage, Modality, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import { Subject, Level } from "../types";
 
 const getSystemInstruction = (subject: Subject, level: Level) => `
@@ -18,13 +18,37 @@ const getSystemInstruction = (subject: Subject, level: Level) => `
 `.trim();
 
 export const createChatInstance = (subject: Subject, level: Level) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  // Check multiple possible locations for the API key
+  const apiKey = process.env.GEMINI_API_KEY || 
+                 process.env.VITE_GEMINI_API_KEY || 
+                 (import.meta as any).env?.VITE_GEMINI_API_KEY;
+
+  console.log("Initializing Chat Node [v1.2]. API Key Status:", 
+    apiKey && apiKey !== 'undefined' && apiKey !== 'null' ? 
+    "Present (Starts with " + apiKey.substring(0, 4) + ")" : "MISSING");
+  
+  if (!apiKey || apiKey === 'undefined' || apiKey === 'null' || apiKey === '') {
+    throw new Error("API_KEY_MISSING");
+  }
+  
+  if (!apiKey.startsWith("AIza")) {
+    console.warn("Potential Invalid API Key format. Gemini keys usually start with 'AIza'. Found: " + apiKey.substring(0, 4) + "...");
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
   return ai.chats.create({
-    model: 'gemini-3.1-pro-preview',
+    model: 'gemini-3-flash-preview',
     config: {
       systemInstruction: getSystemInstruction(subject, level),
       temperature: 0.7,
-      tools: [{ googleSearch: {} }]
+      tools: [{ googleSearch: {} }],
+      // Add safety settings to prevent over-filtering of educational content
+      safetySettings: [
+        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+      ]
     },
   });
 };
@@ -39,7 +63,14 @@ export const connectTutorLive = (
     onclose: (e: CloseEvent) => void;
   }
 ) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const apiKey = process.env.GEMINI_API_KEY || 
+                 process.env.VITE_GEMINI_API_KEY || 
+                 (import.meta as any).env?.VITE_GEMINI_API_KEY;
+
+  if (!apiKey || apiKey === 'undefined' || apiKey === 'null' || apiKey === '') {
+    throw new Error("API_KEY_MISSING");
+  }
+  const ai = new GoogleGenAI({ apiKey });
   return ai.live.connect({
     model: 'gemini-2.5-flash-native-audio-preview-12-2025',
     callbacks,
